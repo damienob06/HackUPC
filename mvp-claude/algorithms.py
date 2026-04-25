@@ -1,42 +1,31 @@
 """
-Optimization algorithms for the warehouse-bay selection problem.
+Optimization algorithms — maximise total stored capacity.
 
-We decompose the problem into:
+Because the CSV test cases carry no explicit demand, warehouse.demand is
+set to float('inf') by the loader, meaning "fill the warehouse as fully
+as possible."  The greedy loops already handle this correctly:
+  `while capacity < inf` runs until no more bays physically fit.
 
-    (S) SELECTION  — how many bays of each type to install
-    (P) PLACEMENT  — where to put them in the warehouse
+Simulated annealing uses a separate energy function when demand is
+infinite: energy = -total_capacity + tiny * total_cost, so it drives
+toward maximum capacity and breaks ties by minimum cost.
 
-The selection problem is a multi-item knapsack-style ILP: minimise
-total cost subject to a capacity-coverage constraint and an
-area-fit constraint. The placement problem is solved separately by the
-shelf-packing engine in `placement.py`. If a selection turns out not to
-fit physically, we tighten the area limit and re-solve.
-
-Implemented methods:
-
-    1. greedy_cost_efficiency   — sort by cost/capacity, pack greedily
-    2. greedy_density_first     — sort by capacity per m², then cost
-    3. ilp_select_then_pack     — exact ILP for selection, retry on bad fit
-    4. simulated_annealing      — perturbs counts to refine ILP solution
-    5. ilp_with_aisle_model     — ILP that subtracts aisle area from the
-                                  area constraint based on row count
-
-Each function returns a `Solution` dataclass with placements and
-runtime, ready for the visualizer.
+ILP selection is kept but always falls back to greedy when demand=inf
+(the capacity >= inf constraint is infeasible — that's fine).
 """
 
 from __future__ import annotations
 import math
 import random
 import time
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 from models import BayType, Warehouse, PlacedBay, Solution
-from placement import pack, shelf_pack, expand_counts_to_list, evaluate_layout
+from placement import pack, shelf_pack, expand_counts_to_list
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Shared helpers
 # ---------------------------------------------------------------------------
 
 def _solution_from_counts(counts: Dict[str, int],
@@ -45,15 +34,13 @@ def _solution_from_counts(counts: Dict[str, int],
                           method: str,
                           runtime_s: float,
                           allow_rotation: bool = True,
-                          extra: Optional[dict] = None,
-                          packer: str = "skyline") -> Solution:
-    """Materialise a (counts -> Solution) by physically packing them."""
+                          extra: Optional[dict] = None) -> Solution:
     flat = expand_counts_to_list(counts, catalogue)
-    placed, unplaced = pack(flat, warehouse, allow_rotation=allow_rotation, method=packer)
+    placed, unplaced = pack(flat, warehouse, allow_rotation)
     by_id = {b.id: b for b in catalogue}
     cost = sum(by_id[p.bay_id].cost for p in placed)
     cap  = sum(by_id[p.bay_id].capacity for p in placed)
-    sol = Solution(
+    return Solution(
         method=method,
         placements=placed,
         total_cost=cost,
@@ -65,13 +52,10 @@ def _solution_from_counts(counts: Dict[str, int],
                "unplaced": [b.id for b in unplaced],
                **(extra or {})},
     )
-    return sol
 
 
-def _packing_efficiency_estimate(warehouse: Warehouse, n_rows_est: int = 4) -> float:
-    """Approximate share of the warehouse area that's actually usable
-    for bays after subtracting aisle corridors and obstacles. Used as a
-    safety factor in the area constraint of the ILP."""
+def _packing_efficiency_estimate(warehouse: Warehouse,
+                                  n_rows_est: int = 4) -> float:
     obstacle_area = sum(o.width * o.depth for o in warehouse.obstacles)
     aisle_area = max(0, n_rows_est) * warehouse.aisle_width * warehouse.width
     usable = max(0.0, warehouse.area - obstacle_area - aisle_area)
@@ -85,72 +69,56 @@ def _packing_efficiency_estimate(warehouse: Warehouse, n_rows_est: int = 4) -> f
 def greedy_cost_efficiency(catalogue: List[BayType],
                            warehouse: Warehouse,
                            allow_rotation: bool = True) -> Solution:
-    """Pick the bay with the best cost-per-capacity, install as many as
-    will fit, then move to the next type if demand still unmet.
-
-    Includes a 'repair' phase: if standard ordering can't fill demand,
-    try every bay type one-by-one to see what still fits — this rescues
-    cases where the largest type filled the warehouse with no room for
-    one extra big bay, but a small one still fits."""
     t0 = time.time()
     sorted_bays = sorted(catalogue, key=lambda b: (b.cost_per_unit, -b.density))
     counts: Dict[str, int] = {b.id: 0 for b in catalogue}
-
     placed: List[PlacedBay] = []
     capacity = 0.0
 
     for bay in sorted_bays:
         while capacity < warehouse.demand:
-            tentative_counts = dict(counts)
-            tentative_counts[bay.id] += 1
-            flat = expand_counts_to_list(tentative_counts, catalogue)
-            new_placed, unplaced = pack(flat, warehouse, allow_rotation=allow_rotation)
+            tentative = dict(counts); tentative[bay.id] += 1
+            flat = expand_counts_to_list(tentative, catalogue)
+            new_placed, unplaced = pack(flat, warehouse, allow_rotation)
             if unplaced:
-                break  # this bay type can't be added any more
+                break
             placed = new_placed
             counts[bay.id] += 1
             capacity += bay.capacity
-
         if capacity >= warehouse.demand:
             break
 
-    # ---- repair phase: try ANY bay type if still short ----
+    # repair: squeeze in any type that still fits
     if capacity < warehouse.demand:
-        repair_progress = True
-        while capacity < warehouse.demand and repair_progress:
-            repair_progress = False
-            # try smaller bays first now (better chance of fitting)
-            repair_order = sorted(catalogue,
-                                   key=lambda b: (b.footprint, b.cost_per_unit))
-            for bay in repair_order:
+        changed = True
+        while capacity < warehouse.demand and changed:
+            changed = False
+            for bay in sorted(catalogue, key=lambda b: (b.footprint, b.cost_per_unit)):
                 tentative = dict(counts); tentative[bay.id] += 1
                 flat = expand_counts_to_list(tentative, catalogue)
-                new_placed, unplaced = pack(flat, warehouse,
-                                                   allow_rotation=allow_rotation)
+                new_placed, unplaced = pack(flat, warehouse, allow_rotation)
                 if not unplaced:
                     placed = new_placed
                     counts[bay.id] += 1
                     capacity += bay.capacity
-                    repair_progress = True
+                    changed = True
                     break
 
-    cost = sum(next(b for b in catalogue if b.id == p.bay_id).cost for p in placed)
-    sol = Solution(
+    by_id = {b.id: b for b in catalogue}
+    cost = sum(by_id[p.bay_id].cost for p in placed)
+    return Solution(
         method="greedy_cost_efficiency",
         placements=placed, total_cost=cost, total_capacity=capacity,
         demand=warehouse.demand, warehouse_area=warehouse.area,
         runtime_s=time.time() - t0,
         extra={"requested_counts": counts},
     )
-    return sol
 
 
 def greedy_density_first(catalogue: List[BayType],
                          warehouse: Warehouse,
                          allow_rotation: bool = True) -> Solution:
-    """Same idea but prefer space-efficient bays first (capacity / m²),
-    then break ties by cost. Useful when the warehouse is small relative
-    to demand. Uses the same repair phase as greedy_cost_efficiency."""
+    """Prefer bays with the highest capacity per mm² — best for filling space."""
     t0 = time.time()
     sorted_bays = sorted(catalogue, key=lambda b: (-b.density, b.cost_per_unit))
     counts: Dict[str, int] = {b.id: 0 for b in catalogue}
@@ -161,7 +129,7 @@ def greedy_density_first(catalogue: List[BayType],
         while capacity < warehouse.demand:
             tentative = dict(counts); tentative[bay.id] += 1
             flat = expand_counts_to_list(tentative, catalogue)
-            new_placed, unplaced = pack(flat, warehouse, allow_rotation=allow_rotation)
+            new_placed, unplaced = pack(flat, warehouse, allow_rotation)
             if unplaced:
                 break
             placed = new_placed
@@ -170,26 +138,24 @@ def greedy_density_first(catalogue: List[BayType],
         if capacity >= warehouse.demand:
             break
 
-    # repair: try any bay type if still short
+    # repair
     if capacity < warehouse.demand:
-        repair_progress = True
-        while capacity < warehouse.demand and repair_progress:
-            repair_progress = False
-            repair_order = sorted(catalogue,
-                                   key=lambda b: (b.footprint, b.cost_per_unit))
-            for bay in repair_order:
+        changed = True
+        while capacity < warehouse.demand and changed:
+            changed = False
+            for bay in sorted(catalogue, key=lambda b: (b.footprint, b.cost_per_unit)):
                 tentative = dict(counts); tentative[bay.id] += 1
                 flat = expand_counts_to_list(tentative, catalogue)
-                new_placed, unplaced = pack(flat, warehouse,
-                                                   allow_rotation=allow_rotation)
+                new_placed, unplaced = pack(flat, warehouse, allow_rotation)
                 if not unplaced:
                     placed = new_placed
                     counts[bay.id] += 1
                     capacity += bay.capacity
-                    repair_progress = True
+                    changed = True
                     break
 
-    cost = sum(next(b for b in catalogue if b.id == p.bay_id).cost for p in placed)
+    by_id = {b.id: b for b in catalogue}
+    cost = sum(by_id[p.bay_id].cost for p in placed)
     return Solution(
         method="greedy_density_first",
         placements=placed, total_cost=cost, total_capacity=capacity,
@@ -202,36 +168,27 @@ def greedy_density_first(catalogue: List[BayType],
 def greedy_multistart(catalogue: List[BayType],
                       warehouse: Warehouse,
                       allow_rotation: bool = True) -> Solution:
-    """Multi-start greedy: try every bay type (and every cost/density
-    ordering) as the seed, run a greedy fill, return the best feasible
-    solution. Much more robust than single-start greedy because it
-    escapes the 'committed to a bad starting type' trap."""
+    """Try every bay as lead + three standard orderings, return the best."""
     t0 = time.time()
-    candidate_orders = []
-
-    # standard orderings
-    candidate_orders.append(sorted(catalogue, key=lambda b: (b.cost_per_unit, -b.density)))
-    candidate_orders.append(sorted(catalogue, key=lambda b: (-b.density, b.cost_per_unit)))
-    candidate_orders.append(sorted(catalogue, key=lambda b: (b.cost, -b.capacity)))
-
-    # plus: each bay as the lead, rest by cost-eff
+    orders = [
+        sorted(catalogue, key=lambda b: (-b.density, b.cost_per_unit)),
+        sorted(catalogue, key=lambda b: (b.cost_per_unit, -b.density)),
+        sorted(catalogue, key=lambda b: (b.cost, -b.capacity)),
+    ]
     for lead in catalogue:
         rest = sorted([b for b in catalogue if b.id != lead.id],
-                       key=lambda b: b.cost_per_unit)
-        candidate_orders.append([lead] + rest)
+                      key=lambda b: b.cost_per_unit)
+        orders.append([lead] + rest)
 
     best: Optional[Solution] = None
-    for order in candidate_orders:
+    for order in orders:
         sol = _run_ordered_greedy(order, catalogue, warehouse, allow_rotation)
-        if sol.feasible and (best is None
-                              or not best.feasible
-                              or sol.total_cost < best.total_cost):
+        if best is None or sol.total_capacity > best.total_capacity:
             best = sol
-        elif best is None:
-            best = sol  # at least keep something
-    if best is None:
-        best = _run_ordered_greedy(candidate_orders[0], catalogue,
-                                    warehouse, allow_rotation)
+        elif (sol.total_capacity == best.total_capacity
+              and sol.total_cost < best.total_cost):
+            best = sol
+
     best.method = "greedy_multistart"
     best.runtime_s = time.time() - t0
     return best
@@ -240,8 +197,6 @@ def greedy_multistart(catalogue: List[BayType],
 def _run_ordered_greedy(order: List[BayType], catalogue: List[BayType],
                         warehouse: Warehouse,
                         allow_rotation: bool) -> Solution:
-    """Run the greedy with a specific bay-type ordering, with a repair
-    phase. Returns whatever it builds (feasible or not)."""
     counts: Dict[str, int] = {b.id: 0 for b in catalogue}
     placed: List[PlacedBay] = []
     capacity = 0.0
@@ -250,8 +205,7 @@ def _run_ordered_greedy(order: List[BayType], catalogue: List[BayType],
         while capacity < warehouse.demand:
             tentative = dict(counts); tentative[bay.id] += 1
             flat = expand_counts_to_list(tentative, catalogue)
-            new_placed, unplaced = pack(flat, warehouse,
-                                               allow_rotation=allow_rotation)
+            new_placed, unplaced = pack(flat, warehouse, allow_rotation)
             if unplaced:
                 break
             placed = new_placed
@@ -260,37 +214,33 @@ def _run_ordered_greedy(order: List[BayType], catalogue: List[BayType],
         if capacity >= warehouse.demand:
             break
 
-    # repair
     if capacity < warehouse.demand:
-        repair_progress = True
-        while capacity < warehouse.demand and repair_progress:
-            repair_progress = False
-            repair_order = sorted(catalogue,
-                                   key=lambda b: (b.footprint, b.cost_per_unit))
-            for bay in repair_order:
+        changed = True
+        while capacity < warehouse.demand and changed:
+            changed = False
+            for bay in sorted(catalogue, key=lambda b: (b.footprint, b.cost_per_unit)):
                 tentative = dict(counts); tentative[bay.id] += 1
                 flat = expand_counts_to_list(tentative, catalogue)
-                new_placed, unplaced = pack(flat, warehouse,
-                                                   allow_rotation=allow_rotation)
+                new_placed, unplaced = pack(flat, warehouse, allow_rotation)
                 if not unplaced:
                     placed = new_placed
                     counts[bay.id] += 1
                     capacity += bay.capacity
-                    repair_progress = True
+                    changed = True
                     break
 
-    cost = sum(next(b for b in catalogue if b.id == p.bay_id).cost for p in placed)
+    by_id = {b.id: b for b in catalogue}
+    cost = sum(by_id[p.bay_id].cost for p in placed)
     return Solution(
-        method=f"greedy_ordered({order[0].id})",
+        method=f"greedy({order[0].id})",
         placements=placed, total_cost=cost, total_capacity=capacity,
         demand=warehouse.demand, warehouse_area=warehouse.area,
-        runtime_s=0.0,
-        extra={"requested_counts": counts},
+        runtime_s=0.0, extra={"requested_counts": counts},
     )
 
 
 # ---------------------------------------------------------------------------
-# 2. Integer Linear Programming (selection)
+# 2. ILP selection (falls back to greedy when demand=inf)
 # ---------------------------------------------------------------------------
 
 def ilp_select_then_pack(catalogue: List[BayType],
@@ -298,23 +248,11 @@ def ilp_select_then_pack(catalogue: List[BayType],
                          allow_rotation: bool = True,
                          max_retries: int = 6,
                          verbose: bool = False) -> Solution:
-    """Exact ILP for the SELECTION subproblem.
+    if math.isinf(warehouse.demand):
+        sol = greedy_density_first(catalogue, warehouse, allow_rotation)
+        sol.method = "ilp_maximize_fallback_greedy"
+        return sol
 
-    minimise   sum_i n_i * cost_i
-    subject to sum_i n_i * capacity_i  >= demand
-               sum_i n_i * width_i * depth_i  <= eta * warehouse_area
-               n_i in Z>=0
-
-    `eta` is the fraction of the warehouse area we expect to actually
-    cover with bays once aisles & obstacles are accounted for. We start
-    with an estimate and tighten it if the solution doesn't physically
-    fit.
-
-    After solving, we feed the (n_i) into the shelf packer. If anything
-    falls off the warehouse, we lower eta and re-solve.
-
-    Falls back to greedy if PuLP is unavailable.
-    """
     try:
         import pulp
     except ImportError:
@@ -324,63 +262,39 @@ def ilp_select_then_pack(catalogue: List[BayType],
 
     t0 = time.time()
     eta = _packing_efficiency_estimate(warehouse, n_rows_est=4)
-    if eta <= 0:
-        # warehouse too cluttered — just try greedy
-        sol = greedy_cost_efficiency(catalogue, warehouse, allow_rotation)
-        sol.method = "ilp_eta_zero_fallback_greedy"
-        return sol
-
-    upper_bound = {b.id: int(math.ceil(warehouse.demand / b.capacity)) + 5
-                   for b in catalogue if b.capacity > 0}
-
     last_solution: Optional[Solution] = None
+
     for attempt in range(max_retries):
+        if eta <= 0:
+            break
         prob = pulp.LpProblem("WarehouseSelect", pulp.LpMinimize)
-        n_vars = {
-            b.id: pulp.LpVariable(f"n_{b.id}", lowBound=0,
-                                   upBound=upper_bound.get(b.id, 1000),
-                                   cat="Integer")
-            for b in catalogue
-        }
-        # objective
+        upper = {b.id: int(math.ceil(warehouse.demand / b.capacity)) + 5
+                 for b in catalogue if b.capacity > 0}
+        n_vars = {b.id: pulp.LpVariable(f"n_{b.id}", lowBound=0,
+                                         upBound=upper.get(b.id, 1000),
+                                         cat="Integer")
+                  for b in catalogue}
         prob += pulp.lpSum(n_vars[b.id] * b.cost for b in catalogue)
-        # capacity
         prob += (pulp.lpSum(n_vars[b.id] * b.capacity for b in catalogue)
                  >= warehouse.demand)
-        # area
         prob += (pulp.lpSum(n_vars[b.id] * b.footprint for b in catalogue)
                  <= eta * warehouse.area)
 
-        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=10)
-        status = prob.solve(solver)
-
+        status = prob.solve(pulp.PULP_CBC_CMD(msg=False, timeLimit=10))
         if pulp.LpStatus[status] != "Optimal":
-            if verbose:
-                print(f"  [ILP attempt {attempt}] eta={eta:.3f} -> {pulp.LpStatus[status]}")
             eta *= 0.9
             continue
 
         counts = {b.id: int(round(pulp.value(n_vars[b.id]))) for b in catalogue}
-        sol = _solution_from_counts(
-            counts, catalogue, warehouse,
-            method=f"ilp_select_then_pack",
-            runtime_s=time.time() - t0,
-            allow_rotation=allow_rotation,
-            extra={"eta": eta, "attempt": attempt},
-        )
+        sol = _solution_from_counts(counts, catalogue, warehouse,
+                                     method="ilp_select_then_pack",
+                                     runtime_s=time.time() - t0,
+                                     allow_rotation=allow_rotation,
+                                     extra={"eta": eta, "attempt": attempt})
         last_solution = sol
-
-        unplaced_ids = sol.extra.get("unplaced", [])
-        if not unplaced_ids and sol.feasible:
-            if verbose:
-                print(f"  [ILP attempt {attempt}] eta={eta:.3f} -> packed OK")
-            sol.runtime_s = time.time() - t0
+        if not sol.extra.get("unplaced") and sol.feasible:
             return sol
-
-        if verbose:
-            print(f"  [ILP attempt {attempt}] eta={eta:.3f} -> "
-                  f"{len(unplaced_ids)} bays unplaced, tightening")
-        eta *= 0.92  # tighten and retry
+        eta *= 0.92
 
     if last_solution is None:
         last_solution = greedy_cost_efficiency(catalogue, warehouse, allow_rotation)
@@ -390,48 +304,60 @@ def ilp_select_then_pack(catalogue: List[BayType],
 
 
 # ---------------------------------------------------------------------------
-# 3. Simulated annealing  (refinement of an initial solution)
+# 3. Simulated annealing
 # ---------------------------------------------------------------------------
 
 def simulated_annealing(catalogue: List[BayType],
                         warehouse: Warehouse,
                         initial: Optional[Solution] = None,
-                        iterations: int = 4000,
+                        iterations: int = 3000,
                         T0: float = 1.0,
                         Tmin: float = 1e-3,
                         seed: int = 42,
                         allow_rotation: bool = True) -> Solution:
-    """Refine a starting solution by perturbing the bay counts.
+    """Perturb bay counts to refine the initial solution.
 
-    Moves: +1 to a random bay type, -1 to a random bay type, swap one
-    bay-type-A for bay-type-B at equal multiplicity.
-
-    Energy = total_cost  +  PEN_DEMAND * max(0, demand - capacity)
-                          +  PEN_INFEAS * unplaced_count
-
-    Standard geometric cooling schedule. Small instances converge in <1s.
+    Energy function switches depending on whether we are maximising
+    capacity (demand=inf) or minimising cost to meet demand.
     """
     rng = random.Random(seed)
     t0 = time.time()
+    maximize_mode = math.isinf(warehouse.demand)
 
     if initial is None:
-        initial = greedy_cost_efficiency(catalogue, warehouse, allow_rotation)
+        initial = greedy_density_first(catalogue, warehouse, allow_rotation)
 
-    counts: Dict[str, int] = dict(initial.extra.get("requested_counts",
-                                                    {b.id: 0 for b in catalogue}))
-    by_id = {b.id: b for b in catalogue}
+    counts: Dict[str, int] = dict(
+        initial.extra.get("requested_counts", {b.id: 0 for b in catalogue})
+    )
 
-    PEN_DEMAND = max(b.cost / b.capacity for b in catalogue) * 5
-    PEN_INFEAS = max(b.cost for b in catalogue) * 3
+    if maximize_mode:
+        PEN_INFEAS = 1e9
+        cap_scale = max(b.capacity for b in catalogue) or 1.0
+        cost_scale = max(b.cost for b in catalogue) or 1.0
 
-    def energy(c: Dict[str, int]) -> Tuple[float, Solution]:
-        sol = _solution_from_counts(c, catalogue, warehouse,
-                                     method="sa_eval", runtime_s=0.0,
-                                     allow_rotation=allow_rotation)
-        unplaced = len(sol.extra.get("unplaced", []))
-        shortage = max(0.0, warehouse.demand - sol.total_capacity)
-        e = sol.total_cost + PEN_DEMAND * shortage + PEN_INFEAS * unplaced
-        return e, sol
+        def energy(c: Dict[str, int]) -> Tuple[float, Solution]:
+            sol = _solution_from_counts(c, catalogue, warehouse,
+                                         method="sa_eval", runtime_s=0.0,
+                                         allow_rotation=allow_rotation)
+            unplaced = len(sol.extra.get("unplaced", []))
+            # maximise capacity, break ties by cost
+            e = (-sol.total_capacity / cap_scale
+                 + 0.0001 * sol.total_cost / cost_scale
+                 + unplaced * PEN_INFEAS)
+            return e, sol
+    else:
+        PEN_DEMAND = max(b.cost / b.capacity for b in catalogue) * 5
+        PEN_INFEAS = max(b.cost for b in catalogue) * 3
+
+        def energy(c: Dict[str, int]) -> Tuple[float, Solution]:
+            sol = _solution_from_counts(c, catalogue, warehouse,
+                                         method="sa_eval", runtime_s=0.0,
+                                         allow_rotation=allow_rotation)
+            unplaced = len(sol.extra.get("unplaced", []))
+            shortage = max(0.0, warehouse.demand - sol.total_capacity)
+            e = sol.total_cost + PEN_DEMAND * shortage + PEN_INFEAS * unplaced
+            return e, sol
 
     cur_e, cur_sol = energy(counts)
     best_e, best_sol = cur_e, cur_sol
@@ -439,25 +365,19 @@ def simulated_annealing(catalogue: List[BayType],
 
     T = T0
     cooling = (Tmin / T0) ** (1.0 / max(1, iterations))
-
     bay_ids = [b.id for b in catalogue]
 
-    for it in range(iterations):
+    for _ in range(iterations):
         new_counts = dict(counts)
         move = rng.random()
         if move < 0.4:
-            # increment
-            bid = rng.choice(bay_ids)
-            new_counts[bid] += 1
+            new_counts[rng.choice(bay_ids)] += 1
         elif move < 0.75:
-            # decrement (only if positive)
             positives = [b for b, n in new_counts.items() if n > 0]
             if not positives:
                 continue
-            bid = rng.choice(positives)
-            new_counts[bid] -= 1
+            new_counts[rng.choice(positives)] -= 1
         else:
-            # swap one of A for one of B
             positives = [b for b, n in new_counts.items() if n > 0]
             if not positives:
                 continue
@@ -473,10 +393,8 @@ def simulated_annealing(catalogue: List[BayType],
         if delta < 0 or rng.random() < math.exp(-delta / max(T, 1e-12)):
             counts = new_counts
             cur_e, cur_sol = new_e, new_sol
-            if new_sol.feasible and (new_sol.total_cost < best_sol.total_cost
-                                      or not best_sol.feasible):
-                best_sol = new_sol
-                best_e = new_e
+            if new_e < best_e:
+                best_e, best_sol = new_e, new_sol
                 best_counts = dict(new_counts)
         T *= cooling
 
@@ -484,245 +402,5 @@ def simulated_annealing(catalogue: List[BayType],
     best_sol.runtime_s = time.time() - t0
     best_sol.extra["initial_method"] = initial.method
     best_sol.extra["iterations"] = iterations
-    best_sol.extra["requested_counts"] = best_counts
-    return best_sol
-
-
-# ---------------------------------------------------------------------------
-# 4. ILP with aisle-aware area model
-# ---------------------------------------------------------------------------
-
-def ilp_with_aisle_model(catalogue: List[BayType],
-                         warehouse: Warehouse,
-                         allow_rotation: bool = True,
-                         verbose: bool = False) -> Solution:
-    """Variant of the ILP that explicitly models aisle area as a function
-    of estimated row count.
-
-    Estimated rows = ceil(total_depth_used / avg_bay_depth)
-    Aisle area = (rows - 1) * aisle_width * warehouse.width
-
-    Implementation note: the row count depends on the solution itself,
-    so we do an iterative outer loop where we fix the row estimate,
-    solve the ILP, recompute rows from the actual packing, and repeat.
-    """
-    try:
-        import pulp
-    except ImportError:
-        sol = greedy_cost_efficiency(catalogue, warehouse, allow_rotation)
-        sol.method = "ilp_unavailable_fallback_greedy"
-        return sol
-
-    t0 = time.time()
-    avg_depth = sum(b.depth for b in catalogue) / len(catalogue)
-    rows_est = max(1, int(round(warehouse.depth / (avg_depth + warehouse.aisle_width))))
-    last_sol: Optional[Solution] = None
-
-    for outer in range(5):
-        eta = _packing_efficiency_estimate(warehouse, n_rows_est=rows_est)
-        prob = pulp.LpProblem("WarehouseAisleAware", pulp.LpMinimize)
-        n_vars = {
-            b.id: pulp.LpVariable(f"n_{b.id}", lowBound=0, cat="Integer")
-            for b in catalogue
-        }
-        prob += pulp.lpSum(n_vars[b.id] * b.cost for b in catalogue)
-        prob += (pulp.lpSum(n_vars[b.id] * b.capacity for b in catalogue)
-                 >= warehouse.demand)
-        prob += (pulp.lpSum(n_vars[b.id] * b.footprint for b in catalogue)
-                 <= eta * warehouse.area)
-
-        solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=10)
-        status = prob.solve(solver)
-        if pulp.LpStatus[status] != "Optimal":
-            break
-        counts = {b.id: int(round(pulp.value(n_vars[b.id]))) for b in catalogue}
-        sol = _solution_from_counts(counts, catalogue, warehouse,
-                                     method="ilp_with_aisle_model",
-                                     runtime_s=time.time() - t0,
-                                     allow_rotation=allow_rotation,
-                                     extra={"eta": eta, "rows_est": rows_est})
-        last_sol = sol
-
-        # Recompute row count from the actual placement
-        if sol.placements:
-            ys = sorted({round(p.y, 2) for p in sol.placements})
-            new_rows_est = max(1, len(ys))
-        else:
-            new_rows_est = rows_est
-
-        unplaced = len(sol.extra.get("unplaced", []))
-        if unplaced == 0 and new_rows_est == rows_est:
-            if verbose:
-                print(f"  [aisle ILP outer={outer}] converged: "
-                      f"rows={rows_est}, eta={eta:.3f}")
-            break
-        rows_est = new_rows_est + (1 if unplaced > 0 else 0)
-        if verbose:
-            print(f"  [aisle ILP outer={outer}] rows={rows_est}, "
-                  f"eta={eta:.3f}, unplaced={unplaced}")
-
-    if last_sol is None:
-        last_sol = greedy_cost_efficiency(catalogue, warehouse, allow_rotation)
-        last_sol.method = "ilp_failed_fallback_greedy"
-    last_sol.runtime_s = time.time() - t0
-    return last_sol
-
-# ---------------------------------------------------------------------------
-# 5. Combined optimizer (ILP → pack → feedback → SA)
-# ---------------------------------------------------------------------------
-
-def combined_optimizer(catalogue: List[BayType],
-                       warehouse: Warehouse,
-                       allow_rotation: bool = True,
-                       sa_iterations: int = 3000,
-                       verbose: bool = False) -> Solution:
-    """Full feedback-loop optimizer:
-    
-    1. Run ILP selection with initial eta estimate
-    2. Pack with skyline packer
-    3. If packing fails (unplaced bays), tighten eta and re-solve ILP
-    4. Once a feasible ILP+pack solution is found, refine with SA
-    5. SA energy penalizes geometry-unfriendly selections (packing waste)
-    
-    This closes the biggest weakness: selection now gets feedback from
-    placement quality, and SA explores geometry-aware alternatives.
-    """
-    t0 = time.time()
-    
-    # Phase 1: ILP with feedback loop
-    try:
-        import pulp
-        has_ilp = True
-    except ImportError:
-        has_ilp = False
-    
-    best_ilp_sol = None
-    
-    if has_ilp:
-        eta = _packing_efficiency_estimate(warehouse, n_rows_est=4)
-        for attempt in range(8):
-            prob = pulp.LpProblem("CombinedSelect", pulp.LpMinimize)
-            upper = {b.id: int(math.ceil(warehouse.demand / b.capacity)) + 5
-                     for b in catalogue if b.capacity > 0}
-            n_vars = {
-                b.id: pulp.LpVariable(f"n_{b.id}", lowBound=0,
-                                       upBound=upper.get(b.id, 1000),
-                                       cat="Integer")
-                for b in catalogue
-            }
-            prob += pulp.lpSum(n_vars[b.id] * b.cost for b in catalogue)
-            prob += (pulp.lpSum(n_vars[b.id] * b.capacity for b in catalogue)
-                     >= warehouse.demand)
-            prob += (pulp.lpSum(n_vars[b.id] * b.footprint for b in catalogue)
-                     <= eta * warehouse.area)
-            
-            solver = pulp.PULP_CBC_CMD(msg=False, timeLimit=10)
-            status = prob.solve(solver)
-            
-            if pulp.LpStatus[status] != "Optimal":
-                eta *= 0.9
-                continue
-            
-            counts = {b.id: int(round(pulp.value(n_vars[b.id]))) for b in catalogue}
-            sol = _solution_from_counts(counts, catalogue, warehouse,
-                                         method="combined_ilp_phase",
-                                         runtime_s=time.time() - t0,
-                                         allow_rotation=allow_rotation,
-                                         extra={"eta": eta, "attempt": attempt})
-            
-            unplaced_n = len(sol.extra.get("unplaced", []))
-            if verbose:
-                print(f"  [combined ILP #{attempt}] eta={eta:.3f} "
-                      f"unplaced={unplaced_n} cost={sol.total_cost:,.0f}")
-            
-            if unplaced_n == 0 and sol.feasible:
-                best_ilp_sol = sol
-                break
-            
-            # Feedback: tighten area based on actual packing efficiency
-            if sol.placements:
-                actual_used = sum(p.width * p.depth for p in sol.placements)
-                actual_eta = actual_used / warehouse.area
-                eta = min(eta * 0.93, actual_eta * 0.98)
-            else:
-                eta *= 0.85
-    
-    # If ILP failed, use best greedy as seed
-    if best_ilp_sol is None:
-        best_ilp_sol = greedy_multistart(catalogue, warehouse, allow_rotation)
-        best_ilp_sol.method = "combined_greedy_fallback"
-    
-    # Phase 2: SA refinement with geometry-aware energy
-    rng = random.Random(42)
-    counts = dict(best_ilp_sol.extra.get("requested_counts",
-                                          {b.id: 0 for b in catalogue}))
-    by_id = {b.id: b for b in catalogue}
-    
-    PEN_DEMAND = max(b.cost / b.capacity for b in catalogue) * 5
-    PEN_INFEAS = max(b.cost for b in catalogue) * 3
-    PEN_WASTE = max(b.cost for b in catalogue) * 0.5  # geometry penalty
-    
-    def energy(c: Dict[str, int]) -> Tuple[float, Solution]:
-        sol = _solution_from_counts(c, catalogue, warehouse,
-                                     method="combined_sa_eval", runtime_s=0.0,
-                                     allow_rotation=allow_rotation)
-        unplaced = len(sol.extra.get("unplaced", []))
-        shortage = max(0.0, warehouse.demand - sol.total_capacity)
-        # Geometry penalty: ratio of wasted area within bounding box
-        if sol.placements:
-            bay_area = sum(p.width * p.depth for p in sol.placements)
-            max_y = max(p.y + p.depth for p in sol.placements)
-            bbox = warehouse.width * max_y
-            waste_ratio = 1.0 - (bay_area / bbox) if bbox > 0 else 0
-        else:
-            waste_ratio = 1.0
-        e = (sol.total_cost 
-             + PEN_DEMAND * shortage 
-             + PEN_INFEAS * unplaced
-             + PEN_WASTE * waste_ratio)
-        return e, sol
-    
-    cur_e, cur_sol = energy(counts)
-    best_e, best_sol = cur_e, cur_sol
-    best_counts = dict(counts)
-    
-    T = 1.0
-    cooling = (1e-3 / 1.0) ** (1.0 / max(1, sa_iterations))
-    bay_ids = [b.id for b in catalogue]
-    
-    for it in range(sa_iterations):
-        new_counts = dict(counts)
-        move = rng.random()
-        if move < 0.4:
-            bid = rng.choice(bay_ids)
-            new_counts[bid] += 1
-        elif move < 0.75:
-            positives = [b for b, n in new_counts.items() if n > 0]
-            if not positives: continue
-            new_counts[rng.choice(positives)] -= 1
-        else:
-            positives = [b for b, n in new_counts.items() if n > 0]
-            if not positives: continue
-            a = rng.choice(positives)
-            b = rng.choice(bay_ids)
-            if a == b: continue
-            new_counts[a] -= 1
-            new_counts[b] += 1
-        
-        new_e, new_sol = energy(new_counts)
-        delta = new_e - cur_e
-        if delta < 0 or rng.random() < math.exp(-delta / max(T, 1e-12)):
-            counts = new_counts
-            cur_e, cur_sol = new_e, new_sol
-            if new_sol.feasible and (new_sol.total_cost < best_sol.total_cost
-                                      or not best_sol.feasible):
-                best_sol = new_sol
-                best_e = new_e
-                best_counts = dict(new_counts)
-        T *= cooling
-    
-    best_sol.method = "combined_optimizer"
-    best_sol.runtime_s = time.time() - t0
-    best_sol.extra["sa_iterations"] = sa_iterations
     best_sol.extra["requested_counts"] = best_counts
     return best_sol

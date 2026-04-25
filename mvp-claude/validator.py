@@ -1,16 +1,12 @@
 """
-Solution validator.
+Independent geometric validator.
 
-After an algorithm produces a Solution we run an INDEPENDENT check:
-
-    1. No bay protrudes outside the warehouse.
-    2. No two bays overlap.
-    3. No bay overlaps an obstacle.
-    4. Total capacity meets demand.
-    5. (Soft) Aisle gaps between rows are at least warehouse.aisle_width.
-
-This is a defensive layer: if any algorithm has a bug, the validator
-catches it before it becomes a wrong answer.
+Checks every constraint without calling back into the packer:
+  1. Bay fully inside warehouse polygon
+  2. Bay height fits under ceiling at its y position
+  3. No two bays overlap
+  4. No bay overlaps an obstacle
+  5. Aisle gap >= warehouse.aisle_width between vertically adjacent bays
 """
 
 from __future__ import annotations
@@ -20,95 +16,98 @@ from models import Solution, Warehouse, BayType, PlacedBay
 
 def validate(solution: Solution, warehouse: Warehouse,
              catalogue: List[BayType],
-             tol: float = 1e-6) -> Tuple[bool, List[str]]:
-    """Return (is_valid, list_of_problems)."""
+             tol: float = 1.0) -> Tuple[bool, List[str]]:
     problems: List[str] = []
     by_id = {b.id: b for b in catalogue}
 
-    # ----- 1. boundaries -----
     for i, p in enumerate(solution.placements):
-        if p.x < -tol or p.y < -tol:
-            problems.append(f"bay #{i} ({p.bay_id}) has negative coords "
-                            f"({p.x:.3f}, {p.y:.3f})")
-        if p.x + p.width > warehouse.width + tol:
-            problems.append(f"bay #{i} ({p.bay_id}) exceeds warehouse width "
-                            f"(x2={p.x + p.width:.3f} > {warehouse.width})")
-        if p.y + p.depth > warehouse.depth + tol:
-            problems.append(f"bay #{i} ({p.bay_id}) exceeds warehouse depth "
-                            f"(y2={p.y + p.depth:.3f} > {warehouse.depth})")
+        # 1. polygon containment
+        if not warehouse.contains_rect(p.x, p.y, p.width, p.depth):
+            problems.append(
+                f"bay #{i} (type {p.bay_id}) extends outside warehouse polygon "
+                f"at ({p.x:.0f}, {p.y:.0f})"
+            )
 
-    # ----- 2. pairwise overlaps -----
+        # 2. ceiling
+        ceiling = warehouse.ceiling_height_at(p.y)
+        if p.height > ceiling + tol:
+            problems.append(
+                f"bay #{i} (type {p.bay_id}) height {p.height:.0f} mm "
+                f"exceeds ceiling {ceiling:.0f} mm at y={p.y:.0f}"
+            )
+
+        # 3. catalogue dimension match
+        bt = by_id.get(p.bay_id)
+        if bt is None:
+            problems.append(f"bay #{i} references unknown type '{p.bay_id}'")
+        else:
+            if p.rotated:
+                ok = (abs(p.width - bt.depth) <= tol
+                      and abs(p.depth - bt.width) <= tol)
+            else:
+                ok = (abs(p.width - bt.width) <= tol
+                      and abs(p.depth - bt.depth) <= tol)
+            if not ok:
+                problems.append(
+                    f"bay #{i} (type {p.bay_id}) dimensions "
+                    f"{p.width:.0f}×{p.depth:.0f} don't match catalogue"
+                )
+
+    # 4. pairwise overlaps
     for i, p in enumerate(solution.placements):
         for j in range(i + 1, len(solution.placements)):
             q = solution.placements[j]
             if not (p.x + p.width <= q.x + tol or q.x + q.width <= p.x + tol
                     or p.y + p.depth <= q.y + tol or q.y + q.depth <= p.y + tol):
-                problems.append(f"bays #{i} ({p.bay_id}) and #{j} ({q.bay_id}) overlap")
+                problems.append(
+                    f"bay #{i} (type {p.bay_id}) overlaps bay #{j} "
+                    f"(type {q.bay_id})"
+                )
 
-    # ----- 3. obstacles -----
+    # 5. obstacle collisions
     for i, p in enumerate(solution.placements):
         for o in warehouse.obstacles:
             if not (p.x + p.width <= o.x + tol or o.x + o.width <= p.x + tol
                     or p.y + p.depth <= o.y + tol or o.y + o.depth <= p.y + tol):
-                problems.append(f"bay #{i} ({p.bay_id}) collides with obstacle "
-                                f"at ({o.x},{o.y})")
+                problems.append(
+                    f"bay #{i} (type {p.bay_id}) collides with obstacle "
+                    f"at ({o.x:.0f}, {o.y:.0f})"
+                )
 
-    # ----- 4. dimensions match catalogue -----
-    for i, p in enumerate(solution.placements):
-        bt = by_id.get(p.bay_id)
-        if bt is None:
-            problems.append(f"bay #{i} has unknown id '{p.bay_id}'")
-            continue
-        if p.rotated:
-            if abs(p.width - bt.depth) > tol or abs(p.depth - bt.width) > tol:
-                problems.append(f"bay #{i} ({p.bay_id}) rotated dims mismatch")
-        else:
-            if abs(p.width - bt.width) > tol or abs(p.depth - bt.depth) > tol:
-                problems.append(f"bay #{i} ({p.bay_id}) dims mismatch catalogue")
-
-    # ----- 5. capacity -----
-    if solution.total_capacity < warehouse.demand - tol:
-        problems.append(f"capacity {solution.total_capacity:.2f} < "
-                        f"demand {warehouse.demand}")
-
-    # ----- 6. aisle gap (soft) -----
-    # For each bay, check that no other bay with overlapping x-range
-    # starts within aisle_width above this bay's top edge (unless it's
-    # at the same baseline — row peers don't need aisles between them).
+    # 6. aisle gap (soft check — warns, doesn't reject)
     aw = warehouse.aisle_width
     for i, p in enumerate(solution.placements):
-        for j, q in enumerate(solution.placements):
-            if j <= i:
+        for j in range(i + 1, len(solution.placements)):
+            q = solution.placements[j]
+            x_overlap = not (p.x + p.width <= q.x + tol
+                              or q.x + q.width <= p.x + tol)
+            if not x_overlap:
                 continue
-            # need x-overlap to matter
-            if q.x >= p.x + p.width - tol or q.x + q.width <= p.x + tol:
-                continue
-            # check if q sits too close above p
             gap_above_p = q.y - (p.y + p.depth)
             gap_above_q = p.y - (q.y + q.depth)
-            if 0 < gap_above_p < aw - 0.05:
+            if 0 < gap_above_p < aw - 10:
                 problems.append(
-                    f"bay #{i} ({p.bay_id}) top={p.y+p.depth:.2f} to "
-                    f"bay #{j} ({q.bay_id}) y={q.y:.2f}: "
-                    f"gap={gap_above_p:.2f}m < {aw}m aisle")
-            elif 0 < gap_above_q < aw - 0.05:
+                    f"[aisle] bay #{i} top to bay #{j} bottom: "
+                    f"gap {gap_above_p:.0f} mm < {aw:.0f} mm aisle"
+                )
+            elif 0 < gap_above_q < aw - 10:
                 problems.append(
-                    f"bay #{j} ({q.bay_id}) top={q.y+q.depth:.2f} to "
-                    f"bay #{i} ({p.bay_id}) y={p.y:.2f}: "
-                    f"gap={gap_above_q:.2f}m < {aw}m aisle")
+                    f"[aisle] bay #{j} top to bay #{i} bottom: "
+                    f"gap {gap_above_q:.0f} mm < {aw:.0f} mm aisle"
+                )
 
-    return (len(problems) == 0, problems)
+    return len(problems) == 0, problems
 
 
 def print_validation(solution: Solution, warehouse: Warehouse,
                      catalogue: List[BayType]) -> bool:
     ok, issues = validate(solution, warehouse, catalogue)
     if ok:
-        print(f"  ✓ {solution.method}: passes all validity checks")
+        print(f"  PASS  {solution.method}")
         return True
-    print(f"  ✗ {solution.method}: {len(issues)} issue(s):")
-    for s in issues[:10]:
-        print(f"      - {s}")
-    if len(issues) > 10:
-        print(f"      ... and {len(issues) - 10} more")
+    print(f"  FAIL  {solution.method}: {len(issues)} issue(s)")
+    for s in issues[:8]:
+        print(f"        - {s}")
+    if len(issues) > 8:
+        print(f"        ... and {len(issues) - 8} more")
     return False

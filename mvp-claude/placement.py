@@ -1,121 +1,133 @@
 """
-2D placement engine.
+2D placement engine — polygon-aware, ceiling-height-aware.
 
-Given a list of bays (multi-set of BayType) we need to physically lay
-them out inside the warehouse without overlap, respecting aisles and
-obstacles. The algorithm here is a 'shelf packing' variant tuned for
-warehouse layouts:
+Bays are packed in horizontal rows (shelf packing). Key differences from
+a rectangular warehouse:
 
-    * Bays are placed in horizontal rows (shelves).
-    * Within a row, bays are placed left-to-right against the bottom
-      edge of the row.
-    * The row height equals the deepest bay in that row.
-    * Between rows we leave an aisle of `warehouse.aisle_width`.
-    * 90° rotation is allowed (bays can be placed either way).
-    * Obstacles are respected by skipping any candidate position that
-      collides with one.
-
-This is fast (O(n log n)) and produces realistic warehouse aisle
-layouts.  The result is also more predictable than a free-form
-guillotine packing, which matters when you want to *verify* you fit a
-candidate selection from the ILP.
+  * Boundary check uses polygon containment (not just bounding-box).
+  * Ceiling height is checked per row: a bay with height H can only go
+    in a row at y where warehouse.ceiling_height_at(y) >= H.
+  * When the preferred next-row-y has too low a ceiling for a bay, the
+    packer searches the ceiling profile for the next valid zone.
+  * All coordinates are in mm; the starting origin is the polygon's
+    bounding-box min, not necessarily (0, 0).
 """
 
 from __future__ import annotations
 from typing import List, Optional, Tuple
-from models import BayType, Warehouse, PlacedBay, Obstacle
+from models import BayType, Warehouse, PlacedBay
 
 
-def _fits(x: float, y: float, w: float, d: float,
+# ---------------------------------------------------------------------------
+# Core fit check
+# ---------------------------------------------------------------------------
+
+def _fits(x: float, y: float, w: float, d: float, height: float,
           warehouse: Warehouse, placed: List[PlacedBay]) -> bool:
-    """Check warehouse boundary, obstacles and existing placements."""
-    # Boundary
-    if x < -1e-9 or y < -1e-9:
+    """Return True if a bay at (x,y,w,d,height) is valid."""
+    if not warehouse.contains_rect(x, y, w, d):
         return False
-    if x + w > warehouse.width + 1e-9 or y + d > warehouse.depth + 1e-9:
+    if height > warehouse.ceiling_height_at(y) + 1.0:
         return False
-    # Obstacles
     for o in warehouse.obstacles:
         if o.overlaps(x, y, w, d):
             return False
-    # Other bays
     for p in placed:
-        if not (x + w <= p.x + 1e-9 or p.x2 <= x + 1e-9
-                or y + d <= p.y + 1e-9 or p.y2 <= y + 1e-9):
+        if not (x + w <= p.x + 1.0 or p.x2 <= x + 1.0
+                or y + d <= p.y + 1.0 or p.y2 <= y + 1.0):
             return False
     return True
 
 
+def _slide_right(x: float, y: float, w: float, d: float, height: float,
+                 warehouse: Warehouse, placed: List[PlacedBay],
+                 x_max: float, step: float = 50.0) -> Optional[float]:
+    """Slide the bay right until it fits or runs off the warehouse."""
+    cur = x
+    limit = x_max - w + 1.0
+    while cur <= limit:
+        if _fits(cur, y, w, d, height, warehouse, placed):
+            return cur
+        # Jump past whatever is blocking
+        blocker = cur + step
+        for o in warehouse.obstacles:
+            if o.overlaps(cur, y, w, d):
+                blocker = max(blocker, o.x + o.width)
+        for p in placed:
+            if not (cur + w <= p.x + 1.0 or p.x2 <= cur + 1.0
+                    or y + d <= p.y + 1.0 or p.y2 <= y + 1.0):
+                blocker = max(blocker, p.x2)
+        cur = max(cur + step, blocker + 1.0)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Shelf packer
+# ---------------------------------------------------------------------------
+
 def shelf_pack(bays_to_place: List[BayType],
                warehouse: Warehouse,
                allow_rotation: bool = True) -> Tuple[List[PlacedBay], List[BayType]]:
-    """Pack bays into the warehouse using row-based shelf packing.
+    """Row-based First-Fit-Decreasing shelf packer with polygon + ceiling support.
 
-    Strategy:
-      1. Sort bays by max(width, depth) descending — biggest first
-         (First-Fit Decreasing Height, the standard 2D heuristic).
-      2. For each bay, try to put it into an existing row; if it
-         doesn't fit anywhere, open a new row above the previous one
-         (with an aisle gap).
-      3. If rotation is allowed, try both orientations and keep the
-         one that fits with least wasted shelf space.
-
-    Returns (placed_bays, unplaced_bays). If the warehouse is too small,
-    `unplaced` will be non-empty.
+    Rows are opened bottom-up from y_min. When a bay's height exceeds the
+    ceiling at the default next-row position, the packer jumps forward to
+    the nearest ceiling-zone boundary where the bay fits.
     """
-    # Sort: tallest (deepest when not rotated) first — ties on width
     items = sorted(bays_to_place,
                    key=lambda b: (max(b.width, b.depth), b.width * b.depth),
                    reverse=True)
 
+    x_min, y_min, x_max, y_max = warehouse.bounding_box
+
     placed: List[PlacedBay] = []
     unplaced: List[BayType] = []
-
-    # Each row tracked as (y0, height, x_cursor)
-    rows: List[List[float]] = []   # [y0, height, x_cursor]
-    next_row_y = 0.0
+    rows: List[list] = []   # [y0, row_depth, x_cursor]
+    next_row_y = y_min
 
     for bay in items:
-        # Candidate orientations: (w, d, rotated?)
         orientations = [(bay.width, bay.depth, False)]
-        if allow_rotation and abs(bay.width - bay.depth) > 1e-9:
+        if allow_rotation and abs(bay.width - bay.depth) > 1.0:
             orientations.append((bay.depth, bay.width, True))
 
-        best_choice = None  # (row_idx_or_-1_for_new, x, y, w, d, rotated)
+        best_choice = None
         best_score = float("inf")
 
-        # Try existing rows
+        # ---- try existing rows ----
         for ridx, (y0, h, cursor) in enumerate(rows):
             for w, d, rot in orientations:
-                if d > h + 1e-9:
-                    continue                     # too tall for the shelf
+                if d > h + 1.0:
+                    continue
+                if bay.height > warehouse.ceiling_height_at(y0) + 1.0:
+                    continue
                 x = cursor
-                if not _fits(x, y0, w, d, warehouse, placed):
-                    # try sliding right past obstacles
-                    x = _slide_right(x, y0, w, d, warehouse, placed)
+                if not _fits(x, y0, w, d, bay.height, warehouse, placed):
+                    x = _slide_right(x, y0, w, d, bay.height, warehouse,
+                                     placed, x_max)
                     if x is None:
                         continue
-                if x + w > warehouse.width + 1e-9:
-                    continue
-                # Score: prefer tighter fit (less wasted height)
-                score = (h - d) + (x - cursor) * 0.1
+                score = (h - d) + (x - cursor) * 0.001
                 if score < best_score:
                     best_score = score
                     best_choice = (ridx, x, y0, w, d, rot)
 
-        # Try a new row (if there's room above)
+        # ---- try a new row ----
         for w, d, rot in orientations:
             y0 = next_row_y
-            if y0 + d > warehouse.depth + 1e-9:
-                continue
-            x = 0.0
-            if not _fits(x, y0, w, d, warehouse, placed):
-                x = _slide_right(x, y0, w, d, warehouse, placed)
-                if x is None or x + w > warehouse.width + 1e-9:
+            # If the ceiling is too low here, jump to the next valid zone
+            if bay.height > warehouse.ceiling_height_at(y0) + 1.0:
+                y0 = warehouse.next_tall_ceiling_y(y0, bay.height)
+                if y0 is None or y0 + d > y_max + 1.0:
                     continue
-            # Slight preference for opening a new row when it's a
-            # near-perfect height match for the bay.
-            score = 0.5 + (x * 0.1)
+            if y0 + d > y_max + 1.0:
+                continue
+            x = x_min
+            if not _fits(x, y0, w, d, bay.height, warehouse, placed):
+                x = _slide_right(x, y0, w, d, bay.height, warehouse,
+                                 placed, x_max)
+                if x is None:
+                    continue
+            score = 0.5 + (x - x_min) * 0.001
             if score < best_score:
                 best_score = score
                 best_choice = (-1, x, y0, w, d, rot)
@@ -125,17 +137,16 @@ def shelf_pack(bays_to_place: List[BayType],
             continue
 
         ridx, x, y, w, d, rot = best_choice
-        placed.append(PlacedBay(bay_id=bay.id, x=x, y=y,
-                                width=w, depth=d, rotated=rot))
+        placed.append(PlacedBay(
+            bay_id=bay.id, x=x, y=y,
+            width=w, depth=d, height=bay.height, rotated=rot,
+        ))
         if ridx == -1:
-            # opened new row
             rows.append([y, d, x + w])
             next_row_y = y + d + warehouse.aisle_width
         else:
-            # extend existing row's height if this bay is deeper
             rows[ridx][1] = max(rows[ridx][1], d)
             rows[ridx][2] = x + w
-            # if extending pushed the next-row baseline, recompute
             new_top = rows[ridx][0] + rows[ridx][1] + warehouse.aisle_width
             if new_top > next_row_y:
                 next_row_y = new_top
@@ -143,80 +154,36 @@ def shelf_pack(bays_to_place: List[BayType],
     return placed, unplaced
 
 
-def _slide_right(x: float, y: float, w: float, d: float,
-                 warehouse: Warehouse, placed: List[PlacedBay],
-                 step: float = 0.1) -> Optional[float]:
-    """Try sliding the candidate to the right until it fits or runs out
-    of warehouse. Used to skip obstacles. Returns the first feasible x
-    or None if no slot exists in this row at this y."""
-    cur = x
-    while cur + w <= warehouse.width + 1e-9:
-        if _fits(cur, y, w, d, warehouse, placed):
-            return cur
-        # jump to the right edge of whatever blocks us
-        blocker_right = cur + step
-        for o in warehouse.obstacles:
-            if o.overlaps(cur, y, w, d):
-                blocker_right = max(blocker_right, o.x + o.width)
-        for p in placed:
-            if not (cur + w <= p.x + 1e-9 or p.x2 <= cur + 1e-9
-                    or y + d <= p.y + 1e-9 or p.y2 <= y + 1e-9):
-                blocker_right = max(blocker_right, p.x2)
-        cur = blocker_right + 1e-6
-    return None
-
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def pack(bays_to_place: List[BayType],
          warehouse: Warehouse,
          allow_rotation: bool = True,
-         method: str = "skyline") -> Tuple[List[PlacedBay], List[BayType]]:
-    """Unified packing entry point. Choose 'skyline' (default, tighter)
-    or 'shelf' (legacy, faster but wastes more space)."""
-    if method == "skyline":
-        from skyline import skyline_pack
-        return skyline_pack(bays_to_place, warehouse, allow_rotation)
+         method: str = "shelf") -> Tuple[List[PlacedBay], List[BayType]]:
     return shelf_pack(bays_to_place, warehouse, allow_rotation)
 
 
 def expand_counts_to_list(counts: dict, catalogue: List[BayType]) -> List[BayType]:
-    """Turn {bay_id: n} into a flat list of BayType references."""
     by_id = {b.id: b for b in catalogue}
     flat: List[BayType] = []
     for bay_id, n in counts.items():
         if bay_id not in by_id:
-            raise KeyError(f"Unknown bay id {bay_id}")
+            raise KeyError(f"Unknown bay id {bay_id!r}")
         flat.extend([by_id[bay_id]] * int(round(n)))
     return flat
 
 
 def evaluate_layout(placements: List[PlacedBay],
                     catalogue: List[BayType],
-                    warehouse: Warehouse) -> Tuple[float, float, bool]:
-    """Compute (total_cost, total_capacity, feasible_layout) for a set
-    of placements. feasible_layout means: no overlaps, all in bounds,
-    no obstacle collisions."""
+                    warehouse: Warehouse):
     by_id = {b.id: b for b in catalogue}
-    cost = 0.0
-    cap = 0.0
-    for p in placements:
-        bt = by_id[p.bay_id]
-        cost += bt.cost
-        cap += bt.capacity
-
-    feasible = True
-    for i, p in enumerate(placements):
-        if (p.x < -1e-9 or p.y < -1e-9
-                or p.x2 > warehouse.width + 1e-9
-                or p.y2 > warehouse.depth + 1e-9):
-            feasible = False; break
-        for o in warehouse.obstacles:
-            if o.overlaps(p.x, p.y, p.width, p.depth):
-                feasible = False; break
-        if not feasible:
-            break
-        for q in placements[i + 1:]:
-            if p.overlaps(q):
-                feasible = False; break
-        if not feasible:
-            break
-    return cost, cap, feasible
+    cost = sum(by_id[p.bay_id].cost for p in placements)
+    cap  = sum(by_id[p.bay_id].capacity for p in placements)
+    ok = all(
+        warehouse.contains_rect(p.x, p.y, p.width, p.depth)
+        and p.height <= warehouse.ceiling_height_at(p.y) + 1.0
+        for p in placements
+    )
+    return cost, cap, ok

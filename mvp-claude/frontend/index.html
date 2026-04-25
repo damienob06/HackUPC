@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Warehouse Optimizer</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --blue:    #2563eb;
+      --blue-dk: #1d4ed8;
+      --green:   #16a34a;
+      --orange:  #ea580c;
+      --purple:  #7c3aed;
+      --red:     #dc2626;
+      --slate:   #1e293b;
+      --muted:   #64748b;
+      --border:  #e2e8f0;
+      --bg:      #f8fafc;
+      --card:    #ffffff;
+      --shadow:  0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--slate);
+      line-height: 1.5;
+    }
+
+    /* ── Header ── */
+    header {
+      background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+      color: #fff;
+      padding: 0 24px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    }
+    header h1 { font-size: 18px; font-weight: 700; letter-spacing: -.01em; }
+    header .tag {
+      background: rgba(255,255,255,.2);
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 12px;
+      letter-spacing: .05em;
+    }
+    header .spacer { flex: 1; }
+    header .dot-live {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #4ade80; box-shadow: 0 0 0 3px rgba(74,222,128,.3);
+    }
+
+    /* ── Layout ── */
+    .page { max-width: 1280px; margin: 0 auto; padding: 20px 24px; }
+
+    /* ── Controls ── */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    select {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+      background: white;
+      color: var(--slate);
+      cursor: pointer;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 18px;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn:hover:not(:disabled) { background: var(--blue-dk); }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .btn .spin {
+      display: none;
+      width: 14px; height: 14px;
+      border: 2px solid rgba(255,255,255,.4);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+    }
+    .btn.loading .spin { display: block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #statusMsg { font-size: 13px; color: var(--muted); }
+
+    /* ── Stat cards ── */
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .card {
+      background: var(--card);
+      border-radius: 10px;
+      padding: 18px 20px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+    }
+    .card-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      color: var(--muted);
+    }
+    .card-value {
+      font-size: 30px;
+      font-weight: 800;
+      margin: 4px 0 2px;
+      line-height: 1;
+    }
+    .card-sub { font-size: 12px; color: var(--muted); }
+
+    /* ── Main area ── */
+    .main {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 16px;
+      align-items: start;
+    }
+
+    /* ── Canvas card ── */
+    .canvas-card {
+      background: var(--card);
+      border-radius: 10px;
+      padding: 16px;
+      box-shadow: var(--shadow);
+      border: 1px solid var(--border);
+    }
+    .canvas-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      cursor: crosshair;
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .legend-dot {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    /* ── Sidebar ── */
+    .sidebar { display: flex; flex-direction: column; gap: 16px; }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 13px;
+      padding: 5px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: var(--muted); }
+    .info-value { font-weight: 600; }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .badge-green { background: #dcfce7; color: var(--green); }
+    .badge-red   { background: #fee2e2; color: var(--red); }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      color: var(--muted);
+      padding: 6px 4px;
+      border-bottom: 2px solid var(--border);
+    }
+    td {
+      padding: 7px 4px;
+      border-bottom: 1px solid #f1f5f9;
+      vertical-align: middle;
+    }
+    tr:last-child td { border-bottom: none; }
+    .type-dot {
+      width: 10px; height: 10px;
+      border-radius: 2px;
+      display: inline-block;
+      margin-right: 4px;
+      vertical-align: middle;
+    }
+
+    /* ── Tooltip ── */
+    #tip {
+      position: fixed;
+      background: rgba(15, 23, 42, .85);
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-size: 12px;
+      pointer-events: none;
+      display: none;
+      z-index: 999;
+      white-space: nowrap;
+      backdrop-filter: blur(4px);
+    }
+
+    /* ── Empty/loading state ── */
+    .empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 300px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="dot-live"></div>
+  <h1>Warehouse Optimizer</h1>
+  <span class="tag">HACKUPC</span>
+  <div class="spacer"></div>
+  <span style="font-size:12px;opacity:.7;" id="genAt"></span>
+</header>
+
+<div class="page">
+
+  <!-- Controls -->
+  <div class="controls">
+    <select id="algoSelect">
+      <option value="greedy_multistart">Greedy — Multistart</option>
+      <option value="greedy_cost_efficiency">Greedy — Cost Efficiency</option>
+      <option value="greedy_density_first">Greedy — Density First</option>
+      <option value="simulated_annealing">Simulated Annealing (~2s)</option>
+    </select>
+    <button class="btn" id="solveBtn" onclick="solve()">
+      <div class="spin"></div>
+      Run Solver
+    </button>
+    <span id="statusMsg"></span>
+  </div>
+
+  <!-- Stat cards -->
+  <div class="stats" id="statsGrid">
+    <div class="card"><div class="empty">Loading…</div></div>
+    <div class="card"></div>
+    <div class="card"></div>
+    <div class="card"></div>
+  </div>
+
+  <!-- Canvas + sidebar -->
+  <div class="main">
+    <div class="canvas-card">
+      <div class="canvas-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+        Floor Plan
+      </div>
+      <canvas id="wCanvas"></canvas>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="sidebar">
+      <div class="card" id="algoCard">
+        <div style="font-weight:700;font-size:14px;margin-bottom:12px;">Algorithm Info</div>
+        <div class="empty" style="height:80px;">Loading…</div>
+      </div>
+      <div class="card" id="breakCard">
+        <div style="font-weight:700;font-size:14px;margin-bottom:12px;">Bay Breakdown</div>
+        <div class="empty" style="height:80px;">Loading…</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="tip"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let data = null;
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+async function boot() {
+  setStatus('Loading solution…');
+  try {
+    const r = await fetch('/api/solution');
+    if (!r.ok) throw new Error(r.statusText);
+    data = await r.json();
+    render(data);
+    setStatus('');
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  }
+}
+
+// ── Solve ─────────────────────────────────────────────────────────────────
+async function solve() {
+  const btn = document.getElementById('solveBtn');
+  const algo = document.getElementById('algoSelect').value;
+  btn.classList.add('loading');
+  btn.disabled = true;
+  setStatus('Solving…');
+  try {
+    const r = await fetch('/api/solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ algorithm: algo }),
+    });
+    if (!r.ok) throw new Error(r.statusText);
+    data = await r.json();
+    render(data);
+    setStatus(`Done in ${data.solve_time_s}s`);
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  } finally {
+    btn.classList.remove('loading');
+    btn.disabled = false;
+  }
+}
+
+function setStatus(msg) {
+  document.getElementById('statusMsg').textContent = msg;
+}
+
+// ── Main render ───────────────────────────────────────────────────────────
+function render(d) {
+  document.getElementById('genAt').textContent =
+    new Date(d.generated_at).toLocaleTimeString();
+  renderStats(d);
+  renderCanvas(d);
+  renderSidebar(d);
+}
+
+// ── Stat cards ────────────────────────────────────────────────────────────
+function renderStats(d) {
+  const s = d.stats;
+  const cards = [
+    {
+      label: 'Total Capacity',
+      value: fmt(s.total_capacity),
+      sub: `${s.capacity_per_m2} pallets / m²`,
+      color: 'var(--blue)',
+    },
+    {
+      label: 'Total Cost',
+      value: '€' + fmt(s.total_cost),
+      sub: `€${(s.total_cost / s.total_capacity).toFixed(2)} per pallet`,
+      color: 'var(--orange)',
+    },
+    {
+      label: 'Floor Utilization',
+      value: s.floor_utilization_pct + '%',
+      sub: `${d.warehouse.area_m2} m² warehouse`,
+      color: 'var(--green)',
+      bar: s.floor_utilization_pct,
+    },
+    {
+      label: 'Bays Placed',
+      value: s.total_bays,
+      sub: `${d.algorithm.replace(/_/g, ' ')}`,
+      color: 'var(--purple)',
+    },
+  ];
+
+  document.getElementById('statsGrid').innerHTML = cards.map(c => `
+    <div class="card">
+      <div class="card-label">${c.label}</div>
+      <div class="card-value" style="color:${c.color}">${c.value}</div>
+      ${c.bar != null ? `
+        <div style="height:4px;background:#e2e8f0;border-radius:2px;margin:6px 0 4px">
+          <div style="height:4px;background:${c.color};border-radius:2px;width:${Math.min(c.bar,100)}%"></div>
+        </div>` : ''}
+      <div class="card-sub">${c.sub}</div>
+    </div>
+  `).join('');
+}
+
+function fmt(n) {
+  return Number(n).toLocaleString();
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────────────
+function renderSidebar(d) {
+  const s = d.stats;
+  const feasible = s.total_capacity >= (d.stats.total_capacity > 0 ? 1 : 0);
+  const badge = feasible
+    ? '<span class="badge badge-green">Feasible</span>'
+    : '<span class="badge badge-red">Infeasible</span>';
+
+  document.getElementById('algoCard').innerHTML = `
+    <div style="font-weight:700;font-size:14px;margin-bottom:12px;">Algorithm Info</div>
+    <div class="info-row">
+      <span class="info-label">Method</span>
+      <span class="info-value" style="font-size:12px">${d.algorithm.replace(/_/g,' ')}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Status</span>${badge}
+    </div>
+    <div class="info-row">
+      <span class="info-label">Solve time</span>
+      <span class="info-value">${d.solve_time_s}s</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Cap / m²</span>
+      <span class="info-value">${s.capacity_per_m2}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Cap / k€</span>
+      <span class="info-value">${(s.capacity_per_cost * 1000).toFixed(2)}</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">Warehouse</span>
+      <span class="info-value">${d.warehouse.area_m2} m²</span>
+    </div>
+  `;
+
+  const rows = s.bay_type_breakdown.map(b => `
+    <tr>
+      <td><span class="type-dot" style="background:${b.color}"></span>${b.type_id}</td>
+      <td style="text-align:right">${b.count}</td>
+      <td style="text-align:right">${fmt(b.capacity)}</td>
+      <td style="text-align:right">€${fmt(b.cost)}</td>
+    </tr>
+  `).join('');
+
+  document.getElementById('breakCard').innerHTML = `
+    <div style="font-weight:700;font-size:14px;margin-bottom:12px;">Bay Breakdown</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th style="text-align:right">#</th>
+          <th style="text-align:right">Cap</th>
+          <th style="text-align:right">Cost</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+// ── Canvas ────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('wCanvas');
+const ctx    = canvas.getContext('2d');
+const tip    = document.getElementById('tip');
+
+let _params = null; // saved render params for hit-testing
+
+function renderCanvas(d) {
+  const wh = d.warehouse;
+  const { x_min, y_min, x_max, y_max } = wh.bounding_box;
+  const W = x_max - x_min;
+  const H = y_max - y_min;
+
+  // Size canvas to fit container (container width - 2*16px padding)
+  const containerW = canvas.parentElement.clientWidth - 32;
+  const CANVAS_W = Math.max(400, containerW);
+  const CANVAS_H = Math.round(CANVAS_W * H / W);
+  canvas.width  = CANVAS_W;
+  canvas.height = CANVAS_H;
+
+  const PAD   = 12;
+  const drawW = CANVAS_W - PAD * 2;
+  const drawH = CANVAS_H - PAD * 2;
+  const scale = Math.min(drawW / W, drawH / H);
+
+  // Centre the drawing
+  const offX = PAD + (drawW - W * scale) / 2;
+  const offY = PAD + (drawH - H * scale) / 2;
+
+  const tx = v => offX + (v - x_min) * scale;
+  const ty = v => offY + (H - (v - y_min)) * scale; // flip Y
+
+  _params = { x_min, y_min, scale, offX, offY, H };
+
+  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // Background
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  // Ceiling zones (horizontal bands clipped to warehouse)
+  for (const z of d.ceiling_zones) {
+    ctx.fillStyle = z.color;
+    const top    = ty(z.y_to);
+    const bottom = ty(z.y_from);
+    ctx.fillRect(offX, top, W * scale, bottom - top);
+  }
+
+  // Warehouse polygon border
+  const poly = wh.polygon;
+  ctx.beginPath();
+  ctx.moveTo(tx(poly[0][0]), ty(poly[0][1]));
+  for (let i = 1; i < poly.length; i++) ctx.lineTo(tx(poly[i][0]), ty(poly[i][1]));
+  ctx.closePath();
+  ctx.strokeStyle = '#334155';
+  ctx.lineWidth   = 2;
+  ctx.stroke();
+
+  // Obstacles
+  for (const o of d.obstacles) {
+    const ox = tx(o.x), oy = ty(o.y + o.depth);
+    const ow = o.width * scale, oh = o.depth * scale;
+    ctx.fillStyle = '#475569';
+    ctx.fillRect(ox, oy, ow, oh);
+    // hatch lines
+    ctx.save();
+    ctx.beginPath(); ctx.rect(ox, oy, ow, oh); ctx.clip();
+    ctx.strokeStyle = 'rgba(255,255,255,.25)';
+    ctx.lineWidth = 1;
+    for (let i = -oh; i < ow + oh; i += 6) {
+      ctx.beginPath();
+      ctx.moveTo(ox + i, oy);
+      ctx.lineTo(ox + i + oh, oy + oh);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Placed bays
+  for (const p of d.placements) {
+    const px = tx(p.x), py = ty(p.y + p.depth);
+    const pw = p.width * scale, ph = p.depth * scale;
+
+    ctx.fillStyle = p.color;
+    ctx.fillRect(px, py, pw, ph);
+    ctx.strokeStyle = 'rgba(0,0,0,.25)';
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(px, py, pw, ph);
+
+    // Label if big enough
+    const minDim = Math.min(pw, ph);
+    if (minDim > 14) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,.65)';
+      const fs = Math.max(7, Math.min(10, minDim * 0.45));
+      ctx.font = `600 ${fs}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      // clip text inside bay
+      ctx.beginPath(); ctx.rect(px + 1, py + 1, pw - 2, ph - 2); ctx.clip();
+      ctx.fillText(p.type_id.replace(/-/g, ' '), px + pw / 2, py + ph / 2);
+      ctx.restore();
+    }
+  }
+
+  // Scale bar (bottom-left)
+  const barMm = Math.pow(10, Math.floor(Math.log10(W * 0.25)));  // nice round mm
+  const barPx = barMm * scale;
+  const bx = offX + 4, by = ty(y_min) - 8;
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(bx, by); ctx.lineTo(bx + barPx, by);
+  ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by + 4);
+  ctx.moveTo(bx + barPx, by - 4); ctx.lineTo(bx + barPx, by + 4);
+  ctx.stroke();
+  ctx.fillStyle = '#334155';
+  ctx.font = '10px system-ui';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.fillText((barMm / 1000).toFixed(0) + ' m', bx + barPx / 2, by - 5);
+
+  // Legend
+  const legend = document.getElementById('legend');
+  legend.innerHTML = d.bay_types.map(bt => `
+    <div class="legend-item">
+      <span class="legend-dot" style="background:${bt.color}"></span>
+      ${bt.id}
+    </div>
+  `).join('') + `
+    <div class="legend-item">
+      <span class="legend-dot" style="background:#475569"></span>
+      Obstacle
+    </div>
+  `;
+}
+
+// ── Hover tooltip ─────────────────────────────────────────────────────────
+canvas.addEventListener('mousemove', function(e) {
+  if (!data || !_params) return;
+  const rect  = canvas.getBoundingClientRect();
+  const scaleX = canvas.width  / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (e.clientX - rect.left)  * scaleX;
+  const my = (e.clientY - rect.top)   * scaleY;
+
+  const { x_min, y_min, scale, offX, offY, H } = _params;
+  const tx = v => offX + (v - x_min) * scale;
+  const ty = v => offY + (H - (v - y_min)) * scale;
+
+  let found = null;
+  for (const p of data.placements) {
+    const px = tx(p.x), py = ty(p.y + p.depth);
+    const pw = p.width * scale, ph = p.depth * scale;
+    if (mx >= px && mx <= px + pw && my >= py && my <= py + ph) found = p;
+  }
+
+  if (found) {
+    tip.style.display = 'block';
+    tip.style.left = (e.clientX + 14) + 'px';
+    tip.style.top  = (e.clientY -  8) + 'px';
+    tip.innerHTML = `
+      <b>${found.type_id}</b> &nbsp;
+      ${(found.width/1000).toFixed(2)}×${(found.depth/1000).toFixed(2)} m
+      ${found.rotated ? '↻' : ''}<br>
+      Cap ${found.capacity} · €${found.cost.toLocaleString()}
+    `;
+  } else {
+    tip.style.display = 'none';
+  }
+});
+canvas.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+
+// Redraw on window resize
+window.addEventListener('resize', () => { if (data) renderCanvas(data); });
+
+// ── Go ────────────────────────────────────────────────────────────────────
+boot();
+</script>
+</body>
+</html>
