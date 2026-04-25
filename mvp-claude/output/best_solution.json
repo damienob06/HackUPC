@@ -5,7 +5,7 @@
   "demand": 7500,
   "feasible": true,
   "utilisation": 0.2452698863636364,
-  "runtime_s": 3.5478429794311523,
+  "runtime_s": 3.5375516414642334,
   "placements": [
     {
       "bay_id": "XL-Drive",

@@ -1,0 +1,21 @@
+{
+  "warehouse": {
+    "width": 32,
+    "depth": 22,
+    "demand": 7500,
+    "aisle_width": 2.8,
+    "obstacles": [
+      {"x": 14, "y": 0,  "width": 2, "depth": 2},
+      {"x": 14, "y": 20, "width": 2, "depth": 2},
+      {"x": 0,  "y": 10, "width": 3, "depth": 3}
+    ]
+  },
+  "bays": [
+    {"id": "S-Light",  "width": 2.0, "depth": 1.0, "capacity": 60,  "cost": 700},
+    {"id": "M-Std",    "width": 2.5, "depth": 1.2, "capacity": 95,  "cost": 1000},
+    {"id": "L-Pallet", "width": 2.7, "depth": 1.1, "capacity": 130, "cost": 1250},
+    {"id": "XL-Drive", "width": 3.0, "depth": 1.3, "capacity": 170, "cost": 1500},
+    {"id": "Mezz-2L",  "width": 2.5, "depth": 1.2, "capacity": 180, "cost": 2100},
+    {"id": "AutoBay",  "width": 4.0, "depth": 1.5, "capacity": 320, "cost": 3300}
+  ]
+}
