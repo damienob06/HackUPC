@@ -1,0 +1,371 @@
+{
+  "method": "ilp_select_then_pack",
+  "total_cost": 66450,
+  "total_capacity": 7500,
+  "demand": 7500,
+  "feasible": true,
+  "utilisation": 0.2452698863636364,
+  "runtime_s": 0.018286705017089844,
+  "placements": [
+    {
+      "bay_id": "XL-Drive",
+      "x": 0.0,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 3.0,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 6.0,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 9.0,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 16.000001,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 19.000001,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 22.000001,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 25.000001,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 28.000001,
+      "y": 0.0,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 0.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 3.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 6.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 9.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 12.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 15.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 18.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 21.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 24.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 27.0,
+      "y": 4.1,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 0.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 3.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 6.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 9.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 12.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 15.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 18.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 21.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 24.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 27.0,
+      "y": 8.2,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 3.000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 6.000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 9.000001000000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 12.000001000000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 15.000001000000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 18.000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 21.000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 24.000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 27.000001,
+      "y": 12.3,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 0.0,
+      "y": 16.400000000000002,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 3.0,
+      "y": 16.400000000000002,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 6.0,
+      "y": 16.400000000000002,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 9.0,
+      "y": 16.400000000000002,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "XL-Drive",
+      "x": 12.0,
+      "y": 16.400000000000002,
+      "width": 3.0,
+      "depth": 1.3,
+      "rotated": false
+    },
+    {
+      "bay_id": "L-Pallet",
+      "x": 15.0,
+      "y": 16.400000000000002,
+      "width": 2.7,
+      "depth": 1.1,
+      "rotated": false
+    },
+    {
+      "bay_id": "S-Light",
+      "x": 30.0,
+      "y": 4.1,
+      "width": 2.0,
+      "depth": 1.0,
+      "rotated": false
+    }
+  ]
+}
